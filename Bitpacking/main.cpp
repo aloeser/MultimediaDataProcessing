@@ -8,7 +8,7 @@ template <typename T>
 class Bitpacker {
 
 public:
-    Bitpacker() : _state{0}, _state_bits_used{0}, _state_bits_max{8 * sizeof(_state)} {}
+    Bitpacker() : _state{0}, _state_bits_used{0}, _state_bits_max{8 * sizeof(_state)}, _num_unpacked_numbers {0} {}
 
     void add_value(const int64_t value, const size_t bits) {
         assert(bits > 0);
@@ -47,9 +47,10 @@ public:
         std::vector<int64_t> result;
         int64_t current_value;
 
-
+        size_t num_numbers_unpacked = 0;
         size_t bits_written = 0;
         bool first_bit_read = false;
+
         for (const T value : _values) {
             for (size_t value_bit = 8 * sizeof(T); value_bit > 0; value_bit--) {
 
@@ -76,9 +77,16 @@ public:
                     result.push_back(current_value);
                     first_bit_read = false;
                     bits_written = 0;
+
+                    num_numbers_unpacked++;
+                    if (num_numbers_unpacked == _num_unpacked_numbers) {
+                        goto done_unpacking;
+                    }
                 }
             }
         }
+
+        done_unpacking:
 
         return result;
     }
@@ -94,12 +102,23 @@ public:
 
     void read_text(const std::string& filename, const size_t bits = 8 * sizeof(T)) {
         std::ifstream file(filename, std::ios_base::in);
+        std::vector<int64_t> values;
         int64_t number;
         while (file >> number) {
-            add_value(number, bits);
+            values.push_back(number);
+        }
+        pack_values(values, bits);
+        file.close(); // should happen automatically once file goes out of scope?
+    }
+
+    void pack_values(const std::vector<int64_t>& values, const size_t bits = 8 * sizeof(T)) {
+        _values.clear();
+        for (const auto& value : values) {
+            add_value(value, bits);
+            _num_unpacked_numbers++;
         }
         flush();
-        file.close(); // should happen automatically once file goes out of scope?
+        _num_unpacked_numbers = _values.size();
     }
 
     void write_text(const std::string& filename, size_t bits = 8 * sizeof(T)) {
@@ -112,7 +131,8 @@ public:
         file.close();
     }
 
-    void read_binary(const std::string& filename) {
+    void read_binary(const std::string& filename,  size_t num_numbers) {
+        _values.clear();
         std::ifstream file(filename, std::ios::binary);
         char number;
         while (file.read(&number, 1)) {
@@ -120,6 +140,7 @@ public:
         }
         flush();
         file.close(); // should happen automatically once file goes out of scope?
+        _num_unpacked_numbers = num_numbers;
     }
 
     void write_binary(const std::string& filename) {
@@ -132,6 +153,7 @@ private:
     std::vector<T> _values;
     T _state;
     size_t _state_bits_used;
+    size_t _num_unpacked_numbers;
     const size_t _state_bits_max;
 
 };
@@ -143,10 +165,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    const size_t BITS = 6;
     Bitpacker<int8_t> b;
-    //b.read_text(argv[1], 6);
-    b.read_binary(argv[1]);
-    b.write_text(argv[2], 6);
+    b.read_text(argv[1], BITS);
+    //b.read_binary(argv[1]);
+    b.write_text(argv[2], BITS);
     //b.write_binary(argv[2]);
     std::cout << "Hello, World!" << std::endl;
     return 0;
