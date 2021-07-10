@@ -14,6 +14,7 @@
 #include <vector>
 #include <cassert>
 #include <cmath>
+#include <unordered_map>
 
 template <typename T>
 std::ostream& raw_write(std::ostream& os, T& value, size_t size = sizeof(T)) {
@@ -69,11 +70,22 @@ public:
     }
 };
 
-size_t find_longest_match(const std::vector<std::string>& dictionary, const std::string& window, bool allow_complete_match) {
-    size_t index_longest_match = 0;
-    // maybe checking for the longest string isnt necessary, it might suffice to take the last one, but not sure
-    size_t longest_length = 0;
+size_t find_longest_match(const std::unordered_map<std::string, uint32_t>& dictionary, const std::string& window, bool allow_complete_match) {
+    size_t length_longest_match = 0;
 
+    for (size_t i = 1; i <= window.length();i++) {
+        const auto substring = window.substr(0, i);
+        const auto pos = dictionary.find(substring);
+        if (pos != dictionary.end()) {
+            if (allow_complete_match || substring.length() < window.length()) {
+                length_longest_match = substring.length();
+            }
+        } else {
+            break;
+        }
+    }
+
+    /*
     for (size_t dictionary_id = 0; dictionary_id < dictionary.size(); dictionary_id++) {
         const auto& entry = dictionary[dictionary_id];
         if (window.starts_with(entry) && entry.size() > longest_length) {
@@ -83,9 +95,9 @@ size_t find_longest_match(const std::vector<std::string>& dictionary, const std:
             index_longest_match = dictionary_id + 1;
             longest_length = entry.size();
         }
-    }
+    }*/
 
-    return index_longest_match;
+    return length_longest_match;
 }
 
 void write_index(bitwriter& bw, size_t index_longest_match, size_t dictionary_size) {
@@ -95,7 +107,6 @@ void write_index(bitwriter& bw, size_t index_longest_match, size_t dictionary_si
 }
 
 bool lz78encode(const std::string& input_filename, const std::string& output_filename, int maxbits) {
-    std::cout << "TEEEEEEEST" << std::endl;
     std::ifstream is(input_filename, std::ios::binary);
     if (!is) {
         std::cerr << "Could not open input file " << input_filename << std::endl;
@@ -109,49 +120,57 @@ bool lz78encode(const std::string& input_filename, const std::string& output_fil
     }
 
     // read all the input
-    std::cout << "starting reading" << std::endl;
     std::vector<uint8_t> bytes;
     uint8_t byte;
     while (raw_read(is, byte)) {
         bytes.push_back(byte);
     }
-    std::cout << "done reading" << std::endl;
-    std::vector<std::string> dictionary;
-    const size_t MAX_DICTIONARY_LENGTH = (1 << maxbits) - 1;
-    bitwriter bw(os);
+    std::unordered_map<std::string, uint32_t> dictionary;
 
+    // maxmimum number of entries in the dictionary before it has to be reset
+    const size_t MAX_DICTIONARY_LENGTH = (1 << maxbits) - 1;
+    // to track the maximum length (string length) present in the dictionary. Extremely important for performance,
+    // at least the way I implemented it
+    size_t max_dictionary_entry_length = 0;
+
+
+    // write header
+    bitwriter bw(os);
     bw('L', 8);
     bw('Z', 8);
     bw('7', 8);
     bw('8', 8);
     bw(maxbits, 5);
     for (size_t position = 0; position < bytes.size();) {
-        const auto end_position = std::min(bytes.cbegin() + position + MAX_DICTIONARY_LENGTH + 1, bytes.cend());
+        // using the actual maximum entry length (max_dictionary_entry_length) here rather than the theoretical one (MAX_DICTIONARY_LENGTH)
+        // has a big performance impact: for the bibbia.txt with 20 bits: 3s vs 400ish s, as much less characters need to be copied
+        const auto end_position = std::min(bytes.cbegin() + position + max_dictionary_entry_length + 1, bytes.cend());
         const std::string window(bytes.cbegin() + position, end_position);
-        size_t index_longest_match = find_longest_match(dictionary, window, end_position != bytes.cend());
 
-        write_index(bw, index_longest_match, dictionary.size());
+        size_t length_longest_match = find_longest_match(dictionary, window, end_position != bytes.cend());
 
-        size_t length_of_match = index_longest_match == 0 ? 0 : dictionary[index_longest_match - 1].size();
-        uint8_t new_char = window[length_of_match];
+        size_t index = length_longest_match == 0 ? 0 : dictionary[window.substr(0, length_longest_match)];
+        write_index(bw, index, dictionary.size());
+
+        uint8_t new_char = window[length_longest_match];
         bw(new_char, 8);
-        //std::cout << "(" << index_longest_match << "," << static_cast<uint16_t>(new_char) << ")" << std::endl;
+        //std::cout << "(" << index << "," << static_cast<uint16_t>(new_char) << ")" << std::endl;
 
-        dictionary.push_back(window.substr(0, length_of_match + 1));
+        const auto new_dictionary_key = window.substr(0, length_longest_match + 1);
+        // the dictionary key should not be present in the dictionary yet, otherwise we could find a longer match
+        // exception: at the very end of the string, the second-longest match might be found, as LZ78 always needs to output a pair of index, character, and there would be no character left if we take the longest match
+        assert(dictionary.find(new_dictionary_key) == dictionary.cend() || end_position == bytes.cend());
+        dictionary[new_dictionary_key] = dictionary.size() + 1;
+
+        max_dictionary_entry_length = std::max(max_dictionary_entry_length, length_longest_match + 1);
         if (dictionary.size() > MAX_DICTIONARY_LENGTH) {
             dictionary.clear();
+            max_dictionary_entry_length = 0;
         }
 
-        position += length_of_match + 1;
+        // advance the window
+        position += length_longest_match + 1;
     }
-
-    /*
-    std::cout << "Dictionary contents:" << std::endl;
-    std::cout << "0: <empty, pseudo-entry>" << std::endl;
-    for (size_t i = 0;i < dictionary.size();i++) {
-        std::cout << i+1 << ": " << dictionary[i] << std::endl;
-    }
-     */
 
     return true;
 }
